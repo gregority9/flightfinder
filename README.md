@@ -1,99 +1,59 @@
-# FlightDeck
+# FlightDeck / flightfinder
 
-Osobista, natywna wyszukiwarka lotów na iPhone (SwiftUI, iOS 17+) z serwerem Fli / Google Flights, obserwowaniem tras i alertami cenowymi.
+Natywna aplikacja iPhone (iOS 17+) do wyszukiwania lotów przez Fli i wykrywania okazji. Wersja 1.1 wyszukuje **bezpośrednio na telefonie, bez własnego serwera i kluczy API**.
 
-## Co zawiera projekt
+## Instalacja
 
-- Wyszukiwanie w jedną i obie strony, lotniska IATA, daty, 1–9 dorosłych, klasa, przesiadki i waluty PLN/EUR/TRY/USD/GBP.
-- Karty lotów z czasami lokalnymi, szczegółami przesiadek, sortowaniem i linkiem do konkretnego połączenia w Google Flights.
-- Ostatnie wyszukiwania na telefonie, zapisane progi cenowe na serwerze, wstrzymywanie i usuwanie alertów, historia cen i lista okazji.
-- Sprawdzanie cen domyślnie co 30 minut, również gdy aplikacja jest zamknięta. SQLite przechowuje dane po restarcie serwera.
-- Opcjonalne powiadomienia APNs albo ntfy. Bez konfiguracji kanału okazje są dostępne w zakładce Alerty po odświeżeniu.
-- Klucz API w pęku kluczy iPhone'a, połączenie HTTPS, limity zapytań, pięciominutowy cache.
-- GitHub Actions: testy serwera i kompilacja niepodpisanego IPA na macOS.
+1. Otwórz [Actions → Build iPhone IPA](https://github.com/gregority9/flightfinder/actions/workflows/ios.yml).
+2. W najnowszej udanej kompilacji pobierz artefakt `FlightDeck-unsigned-IPA` i rozpakuj ZIP.
+3. Podpisz i zainstaluj znajdujący się w nim `FlightDeck-unsigned.ipa` narzędziem sideloadingowym, np. iLoader.
+4. Otwórz aplikację i wyszukaj lot. Nie konfigurujesz serwera.
+5. Przy wynikach wybierz „Obserwuj cenę tej trasy”. Domyślnie włączony jest próg automatyczny; można przełączyć na cenę ręczną.
 
-## Stan i ograniczenia
+Aktualizuj z tym samym bundle ID i podpisem, aby zachować historię. Odinstalowanie aplikacji usuwa lokalne dane.
 
-To kod pierwszej wersji, a nie uruchomiona usługa. Do działania trzeba wystawić serwer HTTPS, ustawić klucz i zainstalować aplikację. Samo umieszczenie kodu na GitHubie nie uruchamia serwera ani alertów.
+## Kiedy i jak działają alerty
 
-Testy backendu i kompilacja iOS zostały pomyślnie wykonane na GitHub Actions 25 października 2026. [Pobierz artefakt FlightDeck-unsigned-IPA z udanej kompilacji](https://github.com/gregority9/flightfinder/actions/runs/40213451278). Plik wymaga podpisania narzędziem sideloadingowym przed instalacją. Nie przeprowadzono testu na fizycznym iPhonie ani dostarczenia zdalnego powiadomienia. Szczegóły: [docs/VALIDATION.md](docs/VALIDATION.md).
+- Po wejściu do aplikacji sprawdzane są aktywne trasy, jeżeli od ostatniej kontroli minęło 15 minut. Przeciągnięcie listy Alerty w dół sprawdza je ręcznie. Wyszukiwania mają cache do 5 minut, więc odświeżenie nie zawsze oznacza nowe pobranie danych.
+- **Przy zamkniętej aplikacji ceny nie są sprawdzane.** Powrót do aplikacji uruchamia kontrolę; zamknięcie/anulowanie przerywa trwające zapytania.
+- Automatyczny próg to **15% poniżej mediany wcześniejszych cen** dla identycznych lotnisk, dat, klasy, liczby osób, waluty i limitu przesiadek.
+- Potrzeba co najmniej **5 poprawnych pomiarów rozłożonych na minimum 24 godziny**. Do mediany liczy się najwyżej jeden pomiar z każdego 30-minutowego okna z ostatnich 30 dni. Podczas nauki aplikacja pokazuje „Zbieram historię”, zamiast wymyślać typową cenę. Aktualna cena jest oceniana względem wcześniejszych pomiarów, przed dodaniem jej do historii.
+- To historia obserwacji z tego telefonu, a nie globalna średnia rynkowa. „Zwykle” nie jest porównaniem do wszystkich sezonów ani dat podróży.
+- Osiągnięcie progu tworzy wpis w zakładce Alerty i, po udzieleniu zgody, lokalny baner iOS. Kolejny baner wymaga dalszego spadku o ponad 1% albo ponownego wejścia poniżej progu po wcześniejszym wzroście. Błędy i nieznana/inna waluta nie uruchamiają alertu.
+- Limit 10 zapisanych tras, 200 ostatnich pomiarów na trasę i 100 okazji. Historia jest zapisywana atomowo w Application Support na telefonie.
 
-Fli jest nieoficjalną integracją. Aktualny upstream używa strony wyników Google Flights, a nie publicznego, gwarantowanego API. Wyniki mogą być niepełne lub czasowo niedostępne. Puste wyniki i błędy są rozróżniane. Nie ma zakupu biletu w aplikacji. Filtry bagażu i multi-city nie są oferowane. RT rozwija pięć kandydatów lotu wylotowego, więc nie jest gwarantowanym przeglądem wszystkich możliwych par połączeń. Domyślna częstotliwość nie gwarantuje wykrycia krótkotrwałych okazji.
+## Wyszukiwanie
 
-Alert wysyła powiadomienie przy pierwszej cenie <= progu oraz dalszym spadku; po wzroście ponad próg może zostać uruchomiony ponownie. Błąd dostawcy nie usuwa ostatniej poprawnej ceny. Nieznana/inna waluta nigdy nie jest porównywana z progiem. Dla RT całkowitą cenę pobieramy z rekordu wylotu, zgodnie z serializerem przypiętej wersji Fli. Ceny są łączne dla wszystkich wybranych pasażerów, a nie za osobę. Cena i bagaż wymagają ponownego potwierdzenia przed zakupem.
+Loty w jedną i obie strony; lotniska IATA wyszukiwane lokalnie; 1–9 dorosłych; waluty PLN/EUR/TRY/USD/GBP; klasa i maksymalnie 0–2 przesiadki; sortowanie ceną/czasem; szczegóły lotów i linki do konkretnych połączeń w Google Flights. Kwoty są łączne dla wybranej liczby pasażerów. Godziny są lokalne dla lotnisk. Cena RT pochodzi z finalnego rekordu wybranej podróży, nie z sumy obu rekordów.
 
-## Serwer
+Google jest pobierane przez natywne URLSession, a wbudowany JavaScriptCore wykonuje wyłącznie dołączone do aplikacji kodery/dekodery Fli. HTML Google jest przetwarzany jako tekst; skrypty otrzymane od Google nie są wykonywane. Nie ma WebView ani zdalnego backendu w ścieżce aplikacji. Żądania i przekierowania są ograniczone do HTTPS `www.google.com/travel/flights`.
 
-1. Skopiuj `.env.example` jako `.env`.
-2. Wygeneruj sekret: `python -c 'import secrets; print(secrets.token_urlsafe(32))'` i wpisz go jako `API_TOKEN`.
-3. Uruchom `docker compose up -d --build`.
-4. Skieruj domenę HTTPS przez reverse proxy na `127.0.0.1:8000`. Nie wystawiaj portu bez TLS. Przykład Caddy: `loty.twojadomena.pl { reverse_proxy 127.0.0.1:8000 }`.
-5. W aplikacji → Ustawienia wpisz URL i ten sam klucz. Zapisz i sprawdź połączenie.
+## Ograniczenia
 
-Uruchamiaj dokładnie jeden proces API / jedną replikę: harmonogram działa wewnątrz procesu. Backend jest przeznaczony dla jednej osoby lub zaufanej grupy korzystającej z tego samego klucza. Wszystkie urządzenia z tym kluczem widzą te same alerty. Nie jest serwisem wielokontowym. Utrzymuj kopię wolumenu `flightdeck-data`. Limit: 30 zapisanych tras, 10 wyszukiwań/min, minimum 15 minut między kontrolami pojedynczej trasy. Historyczne daty są automatycznie wyłączane według daty UTC.
+Fli jest nieoficjalną integracją. Google może blokować zapytania lub zmienić format danych. Aplikacja pokazuje błędy i oznacza częściowe wyniki. Nie gwarantuje wszystkich ofert ani finalnej ceny. Bagaż i warunki wymagają sprawdzenia przed zakupem. RT rozwija pięć najtańszych kandydatów wylotu i pobiera powroty osobno, co może potrwać i zużywa kilka MB na stronę wyników. Nie ma multi-city, wyszukiwania „dokądkolwiek” ani elastycznych dat. Powiadomienia lokalne nie działają jako monitoring zamkniętej aplikacji.
 
-Lokalnie:
+Kod poprzedniego, opcjonalnego serwera jest zachowany w `backend/`, `compose.yaml` i `.env.example`; **aplikacja 1.1 go nie używa**. Alerty zapisane wcześniej na serwerze nie są automatycznie przenoszone na telefon.
+
+## Kompilacja i testy
+
+GitHub Actions instaluje Node, buduje dołączony silnik, uruchamia testy JavaScript w środowisku bez przeglądarki/Node globals, następnie testuje prawdziwe JavaScriptCore i politykę okazji w Swift na macOS, po czym kompiluje IPA.
+
+Na Macu:
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r backend/requirements.txt pytest
-export API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-cd backend
-python -m pytest -q
-uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+npm ci
+npm run build:engine
+npm run test:engine
+brew install xcodegen
+cd ios
+xcodegen generate
+open FlightDeck.xcodeproj
 ```
 
-Na prawdziwym telefonie API musi być dostępne przez HTTPS. Aplikacja celowo nie dopuszcza nieszyfrowanego HTTP. Upstream Fli jest przypięty do commita `881aee5ff4321e81ea2157cb44be94ce6a21dc1b`, bo wersja `0.10.0` z tego drzewa nie była dostępna w PyPI podczas przygotowania projektu. Aktualizację przypięcia należy poprzedzić testem adaptera i rzeczywistym wyszukiwaniem. Zależności pośrednie nie są w pełni zablokowane.
+W Xcode wybierz swój zespół, podpis i urządzenie. Natywne testy logiki uruchamiane przez workflow znajdują się w `ios/EngineChecks/main.swift`. Stan weryfikacji: [docs/VALIDATION.md](docs/VALIDATION.md).
 
-## IPA bez własnego Maca
+Silnik budowany jest z przypiętego commita Fli `881aee5ff4321e81ea2157cb44be94ce6a21dc1b` oraz zależności zapisanych w `package-lock.json`. Wymaga dostępu do GitHuba/npm podczas budowania, a po instalacji telefon potrzebuje tylko połączenia z Google Flights. Bundle ID: `com.gregority9.flightdeck`, wersja 1.1.0 (2).
 
-Wgraj zawartość tego katalogu do głównego katalogu repozytorium GitHub, łącznie z `.github`.
+## Źródła i licencje
 
-1. Otwórz **Actions → Build iPhone IPA → Run workflow** albo wypchnij zmianę w `ios/`.
-2. Po udanej kompilacji pobierz artefakt **FlightDeck-unsigned-IPA** i rozpakuj ZIP.
-3. Plik `FlightDeck-unsigned.ipa` wymaga podpisania przez narzędzie sideloadingowe. Zainstaluj go np. używanym przez Ciebie narzędziem, które potrafi podpisywać IPA. Niepodpisany IPA nie jest samodzielnym instalatorem.
-4. Skonfiguruj URL serwera i klucz w aplikacji.
-
-Workflow nie zawiera kluczy Apple i nie wysyła aplikacji do App Store. Dostępność i koszt runnerów macOS zależą od planu i limitów konta GitHub. Utrzymanie serwera i instalacja pozostają oddzielnymi czynnościami.
-
-Na Macu: `brew install xcodegen`, następnie `cd ios && xcodegen generate`; otwórz `FlightDeck.xcodeproj`, wybierz swój zespół i podpis oraz urządzenie. Domyślny bundle ID: `com.gregority9.flightdeck`.
-
-## Powiadomienia przy sideloadingu: ntfy
-
-Na serwerze ustaw `NTFY_TOPIC` (długa losowa nazwa) oraz opcjonalnie `NTFY_SERVER` i `NTFY_TOKEN`. Zrestartuj usługę. W aplikacji ntfy na iPhone zasubskrybuj identyczny serwer i temat oraz włącz powiadomienia. Dla prywatności używaj tematu z kontrolą dostępu; publiczny temat bez uwierzytelnienia może zostać odczytany przez każdego, kto zna jego nazwę.
-
-To powiadomienia aplikacji **ntfy**, nie FlightDeck. Samodzielny serwer ntfy na iOS wymaga dodatkowej konfiguracji upstream relay; opisuje ją dokumentacja ntfy. FlightDeck nadal zapisuje wszystkie okazje we własnej zakładce Alerty.
-
-## Natywne powiadomienia FlightDeck: APNs
-
-Wymagają profilu podpisującego zawierającego Push Notifications dla Twojego bundle ID oraz odpowiedniej konfiguracji Apple Developer. Zwykły niepodpisany/sideloadowany build nie zapewnia tego uprawnienia.
-
-1. W Apple Developer włącz Push Notifications dla identyfikatora aplikacji, przygotuj właściwy profil i klucz APNs `.p8`.
-2. Zmień bundle ID w `ios/project.yml` i identycznie `APNS_BUNDLE_ID` na serwerze, jeśli używasz własnego.
-3. Skopiuj `ios/FlightDeck-Push.entitlements.example` do `ios/FlightDeck/FlightDeck.entitlements`; dodaj do `settings.base` targetu `CODE_SIGN_ENTITLEMENTS: FlightDeck/FlightDeck.entitlements`. Wygeneruj projekt i podpisz odpowiednim profilem. Dla dystrybucji ustaw `aps-environment` na `production` i `APNS_PRODUCTION=true`; dla development pozostaw `development` i `false`.
-4. Zamontuj `.p8` tylko do odczytu na serwerze; ustaw `APNS_KEY_PATH`, `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`. Nie commituj kluczy ani profili.
-5. Po zapisaniu połączenia w aplikacji włącz powiadomienia. Telefon zarejestruje token na serwerze. Serwer pokazuje stan konfiguracji, ale dopiero prawdziwe dostarczenie potwierdzi konfigurację całej ścieżki.
-
-Powiadomienia są best effort. Niepowodzenie jest zapisywane i ponawiane; po zaakceptowaniu przez choć jeden kanał wydarzenie nie jest ponawiane w drugim. APNs nie gwarantuje faktycznego wyświetlenia. Awaria po wysłaniu, ale przed zapisem potwierdzenia, może spowodować powtórne powiadomienie.
-
-## Struktura
-
-```text
-ios/FlightDeck/        modele, SwiftUI, Keychain, klient API i rejestracja APNs
-ios/project.yml       generowanie projektu Xcode
-backend/app/          FastAPI, adapter Fli, SQLite, harmonogram i powiadomienia
-backend/tests/        testy API, cen, walut, alertów i trwałości danych
-.github/workflows/    kompilacja IPA i testy
-compose.yaml          uruchamianie serwera z trwałym wolumenem
-```
-
-## Źródła
-
-- Fli (MIT): https://github.com/punitarani/fli
-- Wykorzystany serializer cen RT: https://github.com/punitarani/fli/blob/881aee5ff4321e81ea2157cb44be94ce6a21dc1b/fli/cli/utils.py
-- ntfy iOS: https://docs.ntfy.sh/subscribe/phone/
-- APNs: https://developer.apple.com/documentation/usernotifications/registering-your-app-with-apns
-- XcodeGen: https://github.com/yonaskolb/XcodeGen
-
-Nie ma dostępu do danych osobistych ani kluczy kont Apple w tym repozytorium. Do integracji z Fli używana jest bezpośrednio jego biblioteka Python; serwer MCP nie jest potrzebny w ścieżce aplikacji mobilnej.
+[Fli](https://github.com/punitarani/fli), MIT, Copyright 2025 Punit Arani. Licencja w `engine/FLI-LICENSE.txt`, dołączana też do aplikacji. Fragment strony użyty w testach pochodzi z publicznego, pozbawionego danych konta fixture projektu Fli. Dodatkowy adapter i reguły okazji należą do tego projektu.

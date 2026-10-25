@@ -58,11 +58,17 @@ struct SearchResponse: Codable {
 struct PriceAlert: Codable, Identifiable {
     let id: String
     let query: FlightQuery
-    let targetPrice: Double
-    let active: Bool
-    let checkedAt: String?
-    let lastPrice: Double?
-    let error: String?
+    var targetPrice: Double
+    var automatic: Bool
+    var active: Bool
+    var checkedAt: String?
+    var lastPrice: Double?
+    var error: String?
+    var baseline: Double?
+    var lastNotifiedPrice: Double?
+    var history: [PricePoint]
+    var effectiveTarget: Double? { automatic ? baseline.map { ($0 * 0.85 * 100).rounded() / 100 } : targetPrice }
+    var learning: Bool { automatic && baseline == nil }
 }
 struct PricePoint: Codable, Identifiable {
     let checkedAt: String
@@ -80,15 +86,9 @@ struct PriceEvent: Codable, Identifiable {
     let title: String
     let body: String
     let bookingUrl: String
-    let delivered: Int
-    let deliveryError: String?
+    var delivered: Int
+    var deliveryError: String?
 }
-struct ServerStatus: Codable {
-    struct Notifications: Codable { let ntfy: Bool; let apns: Bool }
-    let notifications: Notifications
-    let checkIntervalSeconds: Int
-}
-struct OK: Decodable { let ok: Bool }
 func money(_ price: Double?, _ currency: String?) -> String {
     guard let price else { return "Brak ceny" }
     guard let currency else { return String(format: "%.0f (waluta nieznana)", price) }

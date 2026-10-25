@@ -13,3 +13,6 @@ build/
 *.xcodeproj/
 xcuserdata/
 .DS_Store
+node_modules/
+ios/FlightDeck/Engine/
+engine-checks

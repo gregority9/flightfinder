@@ -1,9 +1,9 @@
 name: Build iPhone IPA
 on:
   push:
-    paths: ['ios/**', '.github/workflows/ios.yml']
+    paths: ['ios/**', 'engine/**', 'package*.json', '.github/workflows/ios.yml']
   pull_request:
-    paths: ['ios/**', '.github/workflows/ios.yml']
+    paths: ['ios/**', 'engine/**', 'package*.json', '.github/workflows/ios.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,6 +12,19 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Bundle device Fli engine
+        run: npm run build:engine
+      - name: Test codecs without Node or browser globals
+        run: npm run test:engine
+      - name: Test JavaScriptCore and automatic deal policy on macOS
+        run: |
+          swiftc -parse-as-library -target "$(uname -m)-apple-macos14.0" ios/FlightDeck/Models.swift ios/FlightDeck/DealPolicy.swift ios/FlightDeck/FliCore.swift ios/EngineChecks/main.swift -framework JavaScriptCore -o engine-checks
+          ./engine-checks
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate Xcode project

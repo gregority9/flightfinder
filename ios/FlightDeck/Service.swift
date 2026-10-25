@@ -1,121 +1,177 @@
 import Foundation
-import Security
 import SwiftUI
+import UserNotifications
 
-enum Vault {
-    static let service = "com.gregority9.flightdeck"
-    static func read(_ key: String) -> String {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: key,
-            kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var value: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &value) == errSecSuccess,
-              let data = value as? Data else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-    static func save(_ key: String, _ value: String) throws {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: key]
-        SecItemDelete(query as CFDictionary)
-        var item = query
-        item[kSecValueData as String] = Data(value.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
-            throw ServiceError.message("Nie udało się zapisać klucza w pęku kluczy.")
-        }
-    }
-}
-enum ServiceError: LocalizedError {
-    case message(String)
-    var errorDescription: String? { if case .message(let s) = self { return s }; return nil }
-}
-struct API {
-    var base: String
-    var token: String
-    static var saved: API { API(base: Vault.read("server"), token: Vault.read("token")) }
-    var ready: Bool { !base.isEmpty && !token.isEmpty }
-    func request<T: Decodable>(_ path: String, method: String = "GET", body: Data? = nil) async throws -> T {
-        guard let components = URLComponents(string: base), components.scheme == "https",
-              components.host != nil, components.user == nil, components.password == nil,
-              components.query == nil, components.fragment == nil else {
-            throw ServiceError.message("W Ustawieniach wpisz adres serwera HTTPS i klucz dostępu.")
-        }
-        guard let rootURL = components.url else { throw ServiceError.message("Nieprawidłowy adres serwera") }
-        let root = rootURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: root + path) else { throw ServiceError.message("Nieprawidłowy adres serwera") }
-        var request = URLRequest(url: url, timeoutInterval: 120)
-        request.httpMethod = method; request.httpBody = body
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Do not follow redirects: a misconfigured server must not redirect this bearer token.
-        let session = URLSession(configuration: .ephemeral, delegate: NoRedirect(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw ServiceError.message("Brak odpowiedzi serwera") }
-        guard (200...299).contains(http.statusCode) else {
-            let detail = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            throw ServiceError.message(detail?["detail"] as? String ?? "Błąd \(http.statusCode). Sprawdź dane i ustawienia.")
-        }
-        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(T.self, from: data.isEmpty ? Data("{\"ok\":true}".utf8) : data)
-    }
-    func encode<T: Encodable>(_ value: T) throws -> Data {
-        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
-        return try encoder.encode(value)
-    }
-}
-final class NoRedirect: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
 @MainActor final class FlightStore: ObservableObject {
     @Published var query = FlightQuery()
     @Published var response: SearchResponse?
     @Published var alerts: [PriceAlert] = []
     @Published var events: [PriceEvent] = []
     @Published var loading = false
+    @Published var checking = false
+    @Published var checkProgress = ""
     @Published var error: String?
     @Published var recent: [FlightQuery] = []
-    @Published var configured = API.saved.ready
+    private var checkTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
+    private let provider = NativeFlightProvider.shared
+    private let storageURL: URL
+    private struct Snapshot: Codable {
+        let version: Int
+        let alerts: [PriceAlert]
+        let events: [PriceEvent]
+        let recent: [FlightQuery]
+        let response: SearchResponse?
+    }
     init() {
-        if let data = UserDefaults.standard.data(forKey: "recent"),
-           let saved = try? JSONDecoder().decode([FlightQuery].self, from: data) { recent = saved }
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FlightDeck", isDirectory: true)
+        storageURL = directory.appendingPathComponent("device-data-v1.json")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: storageURL.path) {
+                let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: storageURL))
+                guard snapshot.version == 1 else { throw ServiceError.message("Nieobsługiwana wersja zapisanych danych.") }
+                alerts = snapshot.alerts; events = snapshot.events; recent = snapshot.recent; response = snapshot.response
+                if let first = recent.first { query = first }
+            } else if let data = UserDefaults.standard.data(forKey: "recent"),
+                      let previous = try? JSONDecoder().decode([FlightQuery].self, from: data) { recent = previous }
+        } catch { self.error = "Nie udało się odczytać zapisanych danych. \(error.localizedDescription)" }
+    }
+    private func persist() {
+        do {
+            let data = try JSONEncoder().encode(Snapshot(version: 1, alerts: alerts, events: events, recent: recent, response: response))
+            try data.write(to: storageURL, options: .atomic)
+        } catch { self.error = "Nie udało się zapisać danych na telefonie. \(error.localizedDescription)" }
     }
     func search() async {
         guard !loading else { return }
         loading = true; error = nil; response = nil
         let snapshot = query
-        defer { loading = false }
-        do {
-            response = try await API.saved.request("/v1/search", method: "POST", body: API.saved.encode(snapshot))
-            recent.removeAll { $0 == snapshot }; recent.insert(snapshot, at: 0); recent = Array(recent.prefix(8))
-            UserDefaults.standard.set(try? JSONEncoder().encode(recent), forKey: "recent")
-        } catch { self.error = error.localizedDescription }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.loading = false }
+            do {
+                let result = try await self.provider.search(snapshot)
+                try Task.checkCancellation()
+                self.response = result
+                self.recent.removeAll { $0 == snapshot }; self.recent.insert(snapshot, at: 0)
+                self.recent = Array(self.recent.prefix(8)); self.persist()
+                let matching = self.alerts.filter { $0.query == snapshot && $0.active }.map(\.id)
+                for id in matching { await self.observe(result, alertID: id) }
+            } catch is CancellationError {} catch {
+                if !Task.isCancelled { self.error = error.localizedDescription }
+            }
+        }
+        searchTask = task
+        await task.value
+        searchTask = nil
     }
-    func refresh() async {
-        guard API.saved.ready else { return }
-        do {
-            async let a: [PriceAlert] = API.saved.request("/v1/alerts")
-            async let e: [PriceEvent] = API.saved.request("/v1/events")
-            (alerts, events) = try await (a, e)
-        } catch { self.error = error.localizedDescription }
+    func suspend() { checkTask?.cancel(); searchTask?.cancel() }
+    func refresh(force: Bool = false) async {
+        guard checkTask == nil else { return }
+        let task = Task<Void, Never> { [weak self] in
+            guard let self else { return }
+            await self.runChecks(force: force)
+        }
+        checkTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        checkTask = nil
     }
-    func addAlert(query: FlightQuery, price: Double) async throws {
-        struct Body: Encodable { let query: FlightQuery; let targetPrice: Double }
-        let _: PriceAlert = try await API.saved.request("/v1/alerts", method: "POST", body: API.saved.encode(Body(query: query, targetPrice: price)))
-        await refresh()
+    private func runChecks(force: Bool) async {
+        checking = true
+        defer { checking = false; checkProgress = "" }
+        let ids = alerts.filter(\.active).map(\.id)
+        for (index, id) in ids.enumerated() {
+            if Task.isCancelled { break }
+            guard let alert = alerts.first(where: { $0.id == id }), alert.active else { continue }
+            if alert.query.departureDate < FlightQuery.day(Date()) {
+                if let i = alerts.firstIndex(where: { $0.id == id }) { alerts[i].active = false; alerts[i].error = "Termin minął"; persist() }
+                continue
+            }
+            if !force, let checked = alert.checkedAt,
+               Date().timeIntervalSince(PricePoint(checkedAt: checked, price: nil, error: nil).date) < 900 { continue }
+            checkProgress = "Sprawdzam \(index + 1)/\(ids.count): \(alert.query.route)"
+            do {
+                let result = try await provider.search(alert.query)
+                try Task.checkCancellation()
+                await observe(result, alertID: id)
+            } catch is CancellationError { break }
+            catch {
+                if Task.isCancelled { break }
+                if let i = alerts.firstIndex(where: { $0.id == id }) {
+                    alerts[i].checkedAt = ISO8601DateFormatter().string(from: Date())
+                    alerts[i].error = error.localizedDescription
+                    persist()
+                }
+            }
+        }
+    }
+    private func observe(_ response: SearchResponse, alertID: String) async {
+        guard let i = alerts.firstIndex(where: { $0.id == alertID }), alerts[i].active else { return }
+        if alerts[i].history.contains(where: { $0.checkedAt == response.checkedAt }) { return }
+        let best = response.offers.filter { $0.currency == response.query.currency && ($0.price ?? 0) > 0 }
+            .min { $0.price! < $1.price! }
+        let assessment = DealPolicy.assess(alerts[i].history)
+        alerts[i].baseline = assessment.baseline
+        alerts[i].checkedAt = response.checkedAt
+        guard let best, let price = best.price else {
+            alerts[i].error = response.offers.isEmpty ? "Brak dostępnych połączeń w tym sprawdzeniu" : "Brak cen w wybranej walucie"
+            persist(); return
+        }
+        let threshold = alerts[i].automatic ? assessment.threshold : alerts[i].targetPrice
+        let notify = DealPolicy.shouldNotify(price: price, threshold: threshold, previous: alerts[i].lastNotifiedPrice)
+        if let threshold, price > threshold { alerts[i].lastNotifiedPrice = nil }
+        alerts[i].lastPrice = price; alerts[i].error = nil
+        alerts[i].history.append(PricePoint(checkedAt: response.checkedAt, price: price, error: nil))
+        alerts[i].history = Array(alerts[i].history.suffix(200))
+        // Show the first established baseline without claiming the current price triggered it.
+        if alerts[i].baseline == nil { alerts[i].baseline = DealPolicy.assess(alerts[i].history).baseline }
+        var pendingEvent: PriceEvent?
+        if notify {
+            alerts[i].lastNotifiedPrice = price
+            let saving = assessment.baseline.map { Int((1 - price / $0) * 100) }
+            let detail = alerts[i].automatic ? "\(saving ?? 15)% poniżej mediany wcześniejszych pomiarów." : "Cena osiągnęła ustawiony przez Ciebie próg."
+            let event = PriceEvent(id: UUID().uuidString, createdAt: response.checkedAt,
+                title: "\(response.query.route): \(money(price, response.query.currency))",
+                body: "\(detail) Wylot \(response.query.departureDate). Cena łącznie dla \(response.query.adults) os.",
+                bookingUrl: best.bookingUrl, delivered: 0, deliveryError: nil)
+            events.insert(event, at: 0); events = Array(events.prefix(100)); pendingEvent = event
+        }
+        persist()
+        if let event = pendingEvent {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+            let content = UNMutableNotificationContent(); content.title = event.title; content.body = event.body; content.sound = .default
+            do {
+                try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: event.id, content: content, trigger: nil))
+                if let e = events.firstIndex(where: { $0.id == event.id }) { events[e].delivered = 1; persist() }
+            } catch {
+                if let e = events.firstIndex(where: { $0.id == event.id }) { events[e].deliveryError = "Nie udało się wyświetlić powiadomienia."; persist() }
+            }
+        }
+    }
+    func addAlert(query: FlightQuery, price: Double?, automatic: Bool) async throws {
+        if !automatic && (!(price?.isFinite ?? false) || (price ?? 0) <= 0) { throw ServiceError.message("Podaj poprawną cenę.") }
+        let id: String
+        if let i = alerts.firstIndex(where: { $0.query == query }) {
+            alerts[i].automatic = automatic; alerts[i].targetPrice = price ?? 0; alerts[i].active = true; alerts[i].lastNotifiedPrice = nil
+            id = alerts[i].id
+        } else {
+            guard alerts.count < 10 else { throw ServiceError.message("Limit 10 obserwowanych tras. Usuń niepotrzebne.") }
+            id = UUID().uuidString
+            alerts.insert(PriceAlert(id: id, query: query, targetPrice: price ?? 0, automatic: automatic, active: true,
+                checkedAt: nil, lastPrice: nil, error: nil, baseline: nil, lastNotifiedPrice: nil, history: []), at: 0)
+        }
+        persist()
+        if let response, response.query == query { await observe(response, alertID: id) }
+        Task { await refresh() }
     }
     func remove(_ alert: PriceAlert) async {
-        do { let _: OK = try await API.saved.request("/v1/alerts/\(alert.id)", method: "DELETE"); await refresh() }
-        catch { self.error = error.localizedDescription }
+        alerts.removeAll { $0.id == alert.id }; persist()
     }
     func toggle(_ alert: PriceAlert) async {
-        struct Body: Encodable { let active: Bool }
-        do {
-            let _: OK = try await API.saved.request("/v1/alerts/\(alert.id)", method: "PATCH", body: API.saved.encode(Body(active: !alert.active)))
-            await refresh()
-        } catch { self.error = error.localizedDescription }
+        if let i = alerts.firstIndex(where: { $0.id == alert.id }) { alerts[i].active.toggle(); persist() }
+        await refresh()
     }
 }

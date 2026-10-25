@@ -1,0 +1,10 @@
+{
+  "name": "flightfinder-device-engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:engine": "node engine/build.mjs",
+    "test:engine": "node --test engine/tests/*.test.mjs"
+  },
+  "devDependencies": {"esbuild": "0.25.12", "zod": "4.4.3"}
+}

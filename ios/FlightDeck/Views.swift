@@ -24,7 +24,7 @@ struct RootView: View {
                 .tabItem { Label("Ustawienia", systemImage: "slider.horizontal.3") }.tag(2)
         }
         .task { await store.refresh() }
-        .onChange(of: phase) { _, value in if value == .active { Task { await store.refresh() } } }
+        .onChange(of: phase) { _, value in if value == .active { Task { await store.refresh() } }; if value == .background { store.suspend() } }
     }
 }
 struct SearchView: View {
@@ -47,13 +47,8 @@ struct SearchView: View {
                     Text("TWÓJ NASTĘPNY LOT").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                 }
                 Text("Mniej za lot.\nWięcej na podróż.").font(.system(size: 36, weight: .bold, design: .rounded)).lineSpacing(-2)
-                Text("Znajdź połączenie. Ustaw cenę. Ruszaj.").foregroundStyle(.secondary)
-                if !store.configured {
-                    Button(action: openSettings) {
-                        Label("Połącz serwer, aby wyszukiwać loty", systemImage: "network")
-                            .frame(maxWidth: .infinity).deckCard()
-                    }
-                }
+                Text("Znajdź połączenie. Odkrywaj okazje. Ruszaj.").foregroundStyle(.secondary)
+                Label("Wyszukiwanie bezpośrednio z telefonu", systemImage: "iphone").font(.caption).foregroundStyle(.secondary)
                 VStack(spacing: 18) {
                     Picker("Typ podróży", selection: $roundTrip) {
                         Text("W jedną stronę").tag(false); Text("Tam i z powrotem").tag(true)
@@ -94,7 +89,7 @@ struct SearchView: View {
                             Text(store.loading ? "Szukam połączeń…" : "Znajdź loty").fontWeight(.bold)
                             Spacer(); Image(systemName: "arrow.up.right")
                         }.padding(18).foregroundStyle(Theme.background).background(Theme.lime, in: RoundedRectangle(cornerRadius: 16))
-                    }.disabled(store.loading || !store.configured)
+                    }.disabled(store.loading)
                 }.deckCard()
                 if let error = store.error { Label(error, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange).deckCard() }
                 if let response = store.response {
@@ -125,6 +120,7 @@ struct SearchView: View {
             }.padding(20)
         }
         .background(Theme.background).toolbar(.hidden, for: .navigationBar)
+        .onAppear { roundTrip = store.query.returnDate != nil }
         .onChange(of: roundTrip) { _, value in store.query.returnDate = value ? (store.query.returnDate ?? store.query.departureDate) : nil }
         .sheet(isPresented: Binding(get: { airportSide != nil }, set: { if !$0 { airportSide = nil } })) {
             AirportPicker { airport in
@@ -172,8 +168,7 @@ struct AirportPicker: View {
                 guard !text.isEmpty else { return }
                 do {
                     try await Task.sleep(for: .milliseconds(300))
-                    let escaped = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&+=?#"))) ?? ""
-                    let result: [AirportItem] = try await API.saved.request("/v1/airports?q=\(escaped)")
+                    let result: [AirportItem] = try await NativeFlightProvider.shared.airports(text)
                     guard !Task.isCancelled else { return }; rows = result; error = nil
                 } catch is CancellationError {} catch { if !Task.isCancelled { self.error = error.localizedDescription } }
             }
@@ -222,6 +217,7 @@ struct AddAlertView: View {
     @Environment(\.dismiss) var dismiss
     let query: FlightQuery
     @State private var price = ""
+    @State private var automatic = true
     @State private var error: String?
     @State private var saving = false
     var amount: Double? { Double(price.replacingOccurrences(of: ",", with: ".")) }
@@ -229,21 +225,24 @@ struct AddAlertView: View {
         NavigationStack {
             Form {
                 Section(query.route) { Text(query.departureDate); if let back = query.returnDate { Text("Powrót: \(back)") } }
-                Section("Daj znać, gdy cena wyniesie maksymalnie") {
-                    HStack { TextField("np. 350", text: $price).keyboardType(.decimalPad); Text(query.currency) }
-                    Text("Cena łącznie dla \(query.adults) os. Serwer sprawdza trasę także po zamknięciu aplikacji.").font(.caption)
+                Section("Sposób wykrywania okazji") {
+                    Toggle("Automatycznie: taniej niż zwykle", isOn: $automatic)
+                    if automatic {
+                        Text("Okazja = co najmniej 15% poniżej mediany wcześniejszych cen tej samej trasy, dat i filtrów. Najpierw potrzebne jest 5 pomiarów rozłożonych na co najmniej 24 godziny. Aplikacja zapamiętuje historię podczas korzystania z niej.").font(.caption)
+                    } else {
+                        HStack { TextField("Cena maksymalna, np. 350", text: $price).keyboardType(.decimalPad); Text(query.currency) }
+                    }
+                    Text("Cena łącznie dla \(query.adults) os. Sprawdzanie odbywa się po otwarciu aplikacji, z dostępem do internetu. Gdy jest zamknięta, nie sprawdza cen.").font(.caption).foregroundStyle(.secondary)
                 }
-                Section { Text("Powiadomienia wymagają uruchomionego serwera oraz skonfigurowanego APNs lub ntfy. Wyniki pojawią się również w zakładce Alerty.").font(.caption).foregroundStyle(.secondary) }
                 if let error { Text(error).foregroundStyle(.orange) }
                 Button(saving ? "Zapisuję…" : "Utwórz alert") {
-                    guard let amount else { return }
                     saving = true
                     Task {
-                        do { try await store.addAlert(query: query, price: amount); dismiss() }
+                        do { try await store.addAlert(query: query, price: amount, automatic: automatic); dismiss() }
                         catch { self.error = error.localizedDescription }
                         saving = false
                     }
-                }.disabled(saving || (amount ?? 0) <= 0)
+                }.disabled(saving || (!automatic && (amount ?? 0) <= 0))
             }.navigationTitle("Obserwuj cenę").toolbar { Button("Zamknij") { dismiss() } }
         }
     }
@@ -253,14 +252,18 @@ struct AlertsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Ty planujesz.\nMy pilnujemy cen.").font(.system(size: 32, weight: .bold, design: .rounded))
+                Text("Twoje trasy.\nTwoje okazje.").font(.system(size: 32, weight: .bold, design: .rounded))
                 if let error = store.error { Text(error).foregroundStyle(.orange) }
+                Text("Sprawdzamy ceny, gdy otworzysz aplikację. Ostatnie wyniki i historia są zapisane na telefonie.").font(.caption).foregroundStyle(.secondary)
+                if store.checking { HStack { ProgressView(); Text(store.checkProgress).font(.caption) } }
                 if store.alerts.isEmpty { ContentUnavailableView("Jeszcze bez alertów", systemImage: "bell", description: Text("Wyszukaj trasę i wybierz „Obserwuj cenę tej trasy”.")) }
                 ForEach(store.alerts) { alert in
                     NavigationLink { AlertDetail(identifier: alert.id) } label: {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack { Text(alert.query.route).font(.title2.bold()); Spacer(); Image(systemName: alert.active ? "bell.fill" : "pause.circle").foregroundStyle(Theme.lime) }
-                            Text("\(alert.query.departureDate) · do \(money(alert.targetPrice, alert.query.currency))").font(.callout).foregroundStyle(.secondary)
+                            Text("\(alert.query.departureDate) · \(alert.automatic ? "Automatyczny próg" : "Próg ręczny")").font(.callout).foregroundStyle(.secondary)
+                            if alert.learning { Text("Zbieram historię: \(DealPolicy.assess(alert.history).sampleCount)/5 pomiarów · minimum 24 h").font(.caption).foregroundStyle(.secondary) }
+                            else { Text("Okazja do: \(money(alert.effectiveTarget, alert.query.currency))").font(.caption).foregroundStyle(.secondary) }
                             Text("Ostatnio: \(money(alert.lastPrice, alert.query.currency))").foregroundStyle(Theme.lime)
                             if let error = alert.error { Text(error).font(.caption).foregroundStyle(.orange) }
                             if alert.checkedAt == nil { Text("Oczekuje na pierwsze sprawdzenie").font(.caption).foregroundStyle(.secondary) }
@@ -280,7 +283,7 @@ struct AlertsView: View {
                     }
                 }
             }.padding(20)
-        }.background(Theme.background).navigationTitle("Alerty").refreshable { await store.refresh() }
+        }.background(Theme.background).navigationTitle("Alerty").refreshable { await store.refresh(force: true) }
     }
 }
 struct AlertDetail: View {
@@ -296,19 +299,22 @@ struct AlertDetail: View {
             if let alert {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(alert.query.route).font(.largeTitle.bold())
-                    Text("Próg: \(money(alert.targetPrice, alert.query.currency))").foregroundStyle(Theme.lime)
+                    Text(alert.learning ? "Uczę się typowej ceny tej trasy" : "Próg: \(money(alert.effectiveTarget, alert.query.currency))").foregroundStyle(Theme.lime)
                     Text("\(alert.query.departureDate)\(alert.query.returnDate.map { " → " + $0 } ?? "") · \(alert.query.adults) os.")
                     if history.contains(where: { $0.price != nil }) {
                         Chart {
                             ForEach(history.sorted { $0.date < $1.date }) { point in
                                 if let price = point.price { LineMark(x: .value("Data", point.date), y: .value(alert.query.currency, price)).foregroundStyle(Theme.lime); PointMark(x: .value("Data", point.date), y: .value(alert.query.currency, price)).foregroundStyle(Theme.lime) }
                             }
-                            RuleMark(y: .value("Próg", alert.targetPrice)).foregroundStyle(.secondary).lineStyle(StrokeStyle(dash: [5]))
+                            if let target = alert.effectiveTarget { RuleMark(y: .value("Próg", target)).foregroundStyle(.secondary).lineStyle(StrokeStyle(dash: [5])) }
                         }.frame(height: 210).deckCard()
                     } else { Text("Historia pojawi się po pierwszym udanym sprawdzeniu.").foregroundStyle(.secondary) }
                     if let error { Text(error).foregroundStyle(.orange) }
                     Button(alert.active ? "Wstrzymaj alert" : "Wznów alert") { Task { await store.toggle(alert) } }.buttonStyle(.bordered)
                     Button("Usuń alert", role: .destructive) { confirmDelete = true }
+                    if alert.automatic {
+                        Text("Typowa cena to mediana poprzednich pomiarów z ostatnich 30 dni. Próg jest 15% niżej. To historia z tego telefonu dla dokładnie tych dat, liczby osób i filtrów, nie ogólna średnia rynkowa.").font(.caption).foregroundStyle(.secondary)
+                    }
                     Text("Ostatnie sprawdzenia").font(.headline)
                     ForEach(history) { point in
                         VStack(alignment: .leading) {
@@ -319,69 +325,44 @@ struct AlertDetail: View {
                 }.padding(20)
             }
         }.background(Theme.background).navigationTitle("Historia ceny")
-        .task { await load() }.refreshable { await store.refresh(); await load() }
+        .task { await load() }.refreshable { await store.refresh(force: true); await load() }
         .confirmationDialog("Usunąć alert i historię?", isPresented: $confirmDelete) {
             Button("Usuń", role: .destructive) { if let alert { Task { await store.remove(alert); if store.alerts.allSatisfy({ $0.id != identifier }) { dismiss() } } } }
         }
     }
     func load() async {
-        do { history = try await API.saved.request("/v1/alerts/\(identifier)/history"); error = nil }
-        catch { self.error = error.localizedDescription }
+        history = alert?.history.reversed().map { $0 } ?? []; error = nil
     }
 }
 struct SettingsView: View {
     @EnvironmentObject var store: FlightStore
-    @State private var server = Vault.read("server")
-    @State private var token = Vault.read("token")
     @State private var message: String?
-    @State private var status: ServerStatus?
-    @State private var busy = false
-    @AppStorage("pushError") var pushError = ""
     var body: some View {
         Form {
-            Section("Twój serwer") {
-                TextField("https://loty.twojadomena.pl", text: $server).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField("Klucz dostępu API", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button(busy ? "Łączę…" : "Zapisz i sprawdź połączenie") {
-                    busy = true
+            Section("Działa na Twoim telefonie") {
+                Label("Bez serwera i kluczy API", systemImage: "iphone")
+                Text("Aplikacja łączy się bezpośrednio z Google Flights przez silnik Fli. Do wyszukiwania potrzebujesz internetu. Historia, obserwowane trasy i ostatnie wyniki pozostają na telefonie.").font(.caption)
+            }
+            Section("Automatyczne okazje") {
+                Text("Co najmniej 15% poniżej mediany poprzednich cen. Minimum 5 pomiarów rozłożonych na co najmniej 24 godziny; maksymalnie jeden pomiar na każde 30 minut buduje typową cenę. Porównujemy tylko tę samą trasę, daty, walutę, klasę, liczbę osób i przesiadki.").font(.caption)
+                Text("Ceny sprawdzamy po wejściu do aplikacji, najczęściej co 15 minut. Przeciągnij listę alertów w dół, aby sprawdzić teraz. Wyniki wyszukiwania mogą pochodzić z pamięci do 5 minut. Przy zamkniętej aplikacji nie sprawdzamy cen.").font(.caption)
+            }
+            Section("Powiadomienia lokalne") {
+                Button("Zezwól na powiadomienia o znalezionej okazji") {
                     Task {
                         do {
-                            let api = API(base: server.trimmingCharacters(in: .whitespacesAndNewlines), token: token.trimmingCharacters(in: .whitespacesAndNewlines))
-                            status = try await api.request("/v1/status")
-                            try Vault.save("server", api.base); try Vault.save("token", api.token)
-                            store.configured = true; message = "Połączono z serwerem."
-                            if let device = UserDefaults.standard.string(forKey: "apnsToken") { try? await registerDevice(device) }
-                            await store.refresh()
+                            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                            message = granted ? "Włączone. Okazje znalezione w otwartej aplikacji mogą wyświetlać baner." : "Zezwól na powiadomienia w Ustawieniach iPhone’a. Okazje nadal będą widoczne w zakładce Alerty."
                         } catch { message = error.localizedDescription }
-                        busy = false
                     }
-                }.disabled(busy)
+                }
                 if let message { Text(message).font(.caption) }
+                Text("Nie wymagają konta Apple Developer ani uprawnienia APNs. Nie pojawią się nowe okazje podczas zamkniętej aplikacji.").font(.caption).foregroundStyle(.secondary)
             }
-            Section("Powiadomienia") {
-                if let status {
-                    LabeledContent("Sprawdzanie", value: "co \(status.checkIntervalSeconds / 60) min")
-                    LabeledContent("APNs na serwerze", value: status.notifications.apns ? "Skonfigurowane" : "Wyłączone")
-                    LabeledContent("ntfy na serwerze", value: status.notifications.ntfy ? "Skonfigurowane" : "Wyłączone")
-                }
-                Button("Włącz powiadomienia iPhone") {
-                    Task { @MainActor in
-                        do {
-                            let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
-                            if granted { pushError = ""; UIApplication.shared.registerForRemoteNotifications(); message = "Zgoda udzielona. Rejestruję urządzenie…" }
-                            else { message = "Zezwól na powiadomienia w Ustawieniach iPhone’a." }
-                        } catch { message = error.localizedDescription }
-                    }
-                }
-                if !pushError.isEmpty { Text(pushError).font(.caption).foregroundStyle(.orange) }
-                Text("APNs wymaga podpisu z uprawnieniem Push Notifications i konfiguracji klucza Apple na serwerze. Przy sideloadingu możesz odbierać alerty w aplikacji ntfy, subskrybując temat ustawiony na serwerze.").font(.caption).foregroundStyle(.secondary)
-                Link("Otwórz ntfy", destination: URL(string: "https://ntfy.sh")!)
-            }
-            Section("O cenach") {
-                Text("Źródło: Fli / Google Flights. Wyniki mogą być niepełne. Cena obejmuje wybraną liczbę dorosłych; bagaż i warunki taryfy sprawdź przed zakupem. Godziny lotów są lokalne dla lotnisk.").font(.caption)
-                Text("To osobista aplikacja korzystająca z jednego chronionego serwera. Klucz jest przechowywany w pęku kluczy iPhone’a.").font(.caption)
+            Section("O cenach i danych") {
+                Text("Fli jest nieoficjalną integracją. Google może ograniczyć dostęp lub zwrócić niepełne wyniki. Cena obejmuje wybraną liczbę dorosłych; bagaż i warunki taryfy sprawdź przed zakupem. Godziny lotów są lokalne dla lotnisk.").font(.caption)
+                Text("Odinstalowanie aplikacji usuwa lokalną historię. Zaktualizuj ją z tym samym identyfikatorem i podpisem, aby zachować dane.").font(.caption)
             }
         }.navigationTitle("Ustawienia")
-        .task { if API.saved.ready { status = try? await API.saved.request("/v1/status") } }
     }
 }
