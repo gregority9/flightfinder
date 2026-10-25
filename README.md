@@ -4,7 +4,7 @@ Natywna aplikacja iPhone (iOS 17+) do wyszukiwania lotów przez Fli i wykrywania
 
 ## Instalacja
 
-1. Otwórz [Actions → Build iPhone IPA](https://github.com/gregority9/flightfinder/actions/workflows/ios.yml).
+1. Pobierz [zweryfikowane IPA wersji 1.1](https://github.com/gregority9/flightfinder/actions/runs/40215287061/artifacts/12607411118) albo otwórz [Actions → Build iPhone IPA](https://github.com/gregority9/flightfinder/actions/workflows/ios.yml).
 2. W najnowszej udanej kompilacji pobierz artefakt `FlightDeck-unsigned-IPA` i rozpakuj ZIP.
 3. Podpisz i zainstaluj znajdujący się w nim `FlightDeck-unsigned.ipa` narzędziem sideloadingowym, np. iLoader.
 4. Otwórz aplikację i wyszukaj lot. Nie konfigurujesz serwera.

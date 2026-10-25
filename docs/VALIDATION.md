@@ -11,3 +11,15 @@ Przeprowadzona 24 października 2026 r.; publikacja i kompilacja zweryfikowane 2
 - Testy backendu na GitHub Actions zakończone sukcesem: https://github.com/gregority9/flightfinder/actions/runs/40213451315.
 - Nie uruchomiono hostowanego backendu ani kontenera Docker. Nie skonfigurowano domeny, sekretów, APNs lub ntfy.
 - Repozytorium docelowe wskazane 25 października 2026: https://github.com/gregority9/flightfinder. Aktualny wynik testów i kompilacji jest dostępny w zakładce Actions tego repozytorium.
+
+## Wersja 1.1: bez serwera, 25 października 2026
+
+- Commit aplikacji: `a93ebca016af433b2050bccada14a15509f349c7`.
+- Udana kompilacja urządzenia iOS i artefakt IPA: https://github.com/gregority9/flightfinder/actions/runs/40215287061/artifacts/12607411118.
+- 7 testów adaptera JavaScript przeszło lokalnie oraz na GitHub Actions. Sprawdzono także uruchomienie w innej strefie czasowej (`Pacific/Honolulu`).
+- Testy używają izolowanego runtime bez fetch/Buffer/URL; odczytują prawdziwy, zanonimizowany fixture Google z przypiętej wersji Fli. Obejmują kodowanie requestów, dekodowanie, błędy zamiast pustych sukcesów, walidację, offline airport lookup, przypinanie wylotu oraz finalną cenę RT bez sumowania.
+- Natywny test na macOS uruchomił prawdziwe JavaScriptCore, odczytał fixture i sprawdził kodowanie zapytania. Zweryfikował medianę, odporność na pojedynczą skrajną cenę, minimum 5 próbek i 24 godzin, niedopuszczanie wielokrotnego odświeżania do sztucznej nauki, wygaśnięcie starych próbek, regułę kolejnego powiadomienia i serializację alertu z historią.
+- Prawdziwy test HTTP nowego adaptera (curl jako transport zamiast URLSession): GDN–HAM 24 listopada, HAM–GDN 28 listopada 2026, PLN. Odczytano 9 rekordów wylotu i 4 rekordy powrotu dla wybranego wylotu; przykładowa finalna cena RT wynosiła 862 PLN. To dowód integracji w chwili sprawdzenia, nie aktualna oferta.
+- Log kompilacji potwierdza skopiowanie `fli-engine.js` i `FLI-LICENSE.txt` do `FlightDeck.app`.
+- Backend zachowany historycznie nadal przechodzi testy; aplikacja 1.1 nie korzysta z niego, klucza API ani APNs.
+- Nadal nie wykonano instalacji/testu na fizycznym iPhonie ani wyświetlenia lokalnego banera na urządzeniu. Rzeczywisty dostęp URLSession z sieci telefonu może zależeć od ograniczeń Google. Aplikacja sprawdza ceny tylko na pierwszym planie.
