@@ -1,0 +1,37 @@
+name: Build iPhone IPA
+on:
+  push:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  pull_request:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Build unsigned device app
+        working-directory: ios
+        run: >-
+          xcodebuild -project FlightDeck.xcodeproj -scheme FlightDeck
+          -configuration Release -sdk iphoneos -destination 'generic/platform=iOS'
+          -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package unsigned IPA for sideloading
+        working-directory: ios
+        run: |
+          mkdir -p build/package/Payload
+          cp -R build/Build/Products/Release-iphoneos/FlightDeck.app build/package/Payload/
+          cd build/package
+          zip -qr FlightDeck-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlightDeck-unsigned-IPA
+          path: ios/build/package/FlightDeck-unsigned.ipa
+          retention-days: 14
