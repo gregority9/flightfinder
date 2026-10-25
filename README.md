@@ -16,7 +16,7 @@ Osobista, natywna wyszukiwarka lotów na iPhone (SwiftUI, iOS 17+) z serwerem Fl
 
 To kod pierwszej wersji, a nie uruchomiona usługa. Do działania trzeba wystawić serwer HTTPS, ustawić klucz i zainstalować aplikację. Samo umieszczenie kodu na GitHubie nie uruchamia serwera ani alertów.
 
-Testy backendu można uruchomić poniższymi poleceniami. Kompilację iOS weryfikuje workflow `Build iPhone IPA`; bez wykonania go na macOS projekt nie jest uznany za zweryfikowany kompilacyjnie. Nie przeprowadzono testu na fizycznym iPhonie ani dostarczenia zdalnego powiadomienia.
+Testy backendu i kompilacja iOS zostały pomyślnie wykonane na GitHub Actions 25 października 2026. [Pobierz artefakt FlightDeck-unsigned-IPA z udanej kompilacji](https://github.com/gregority9/flightfinder/actions/runs/40213451278). Plik wymaga podpisania narzędziem sideloadingowym przed instalacją. Nie przeprowadzono testu na fizycznym iPhonie ani dostarczenia zdalnego powiadomienia. Szczegóły: [docs/VALIDATION.md](docs/VALIDATION.md).
 
 Fli jest nieoficjalną integracją. Aktualny upstream używa strony wyników Google Flights, a nie publicznego, gwarantowanego API. Wyniki mogą być niepełne lub czasowo niedostępne. Puste wyniki i błędy są rozróżniane. Nie ma zakupu biletu w aplikacji. Filtry bagażu i multi-city nie są oferowane. RT rozwija pięć kandydatów lotu wylotowego, więc nie jest gwarantowanym przeglądem wszystkich możliwych par połączeń. Domyślna częstotliwość nie gwarantuje wykrycia krótkotrwałych okazji.
 
